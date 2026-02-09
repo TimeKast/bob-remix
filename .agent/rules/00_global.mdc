@@ -1,0 +1,123 @@
+---
+description: Reglas universales del proyecto TimeKast - siempre aplican
+alwaysApply: true
+---
+
+# 🌐 Reglas Globales
+
+Estas reglas **siempre aplican** sin excepción.
+
+---
+
+## 🧠 Principios Fundamentales
+
+1. **Calidad > Velocidad** — Nunca sacrifiques calidad por rapidez
+2. **Claridad > Ingenio** — Código fácil de leer > soluciones "inteligentes" pero opacas
+3. **Consistencia absoluta** — Sigue los patrones existentes del proyecto
+4. **Pensar antes de escribir** — Analiza contexto y efectos colaterales
+
+---
+
+## 📚 Fuente de Verdad
+
+- La documentación en `/docs` es la **fuente principal de verdad**
+- Si algo no está documentado: infiere con cuidado, documenta la suposición
+- **No inventes reglas de negocio**
+
+---
+
+## 🔄 Reutilización Obligatoria
+
+> ⚠️ **ANTES de crear CUALQUIER componente, hook o utilidad:**
+
+1. Consultar `/docs/reference/reusable-library.md`
+2. Buscar en `/components/` (UI y dominio)
+3. Buscar en `/lib/hooks/`
+4. Buscar en `/lib/utils/`
+
+| Situación | Acción |
+|-----------|--------|
+| Existe algo igual | Usarlo directamente |
+| Existe algo similar | Extenderlo con props |
+| No existe pero será reutilizable | Crear en `/components/common/` o `/lib/hooks/` |
+| No existe y es específico | Crear en la carpeta del feature |
+
+**❌ Anti-patrones prohibidos:**
+- Crear `MyCustomTable.tsx` cuando existe `DataTable`
+- Crear `LoadingSpinner.tsx` cuando existe `Skeleton`
+- Copiar lógica de un componente a otro
+
+---
+
+## 🔧 Comandos Terminal
+
+> ⚠️ **CRÍTICO**: NUNCA uses `&&` para encadenar comandos
+
+```bash
+# ❌ INCORRECTO
+git add . && git commit -m "msg" && git push
+
+# ✅ CORRECTO
+git add .
+git commit -m "msg"
+git push
+```
+
+Ejecuta cada comando **por separado**, uno a la vez.
+
+---
+
+## 🚫 Lo que NUNCA debes hacer
+
+- ❌ Cambiar lógica existente sin que se solicite
+- ❌ Romper compatibilidad hacia atrás
+- ❌ Introducir dependencias sin justificación
+- ❌ Copiar/pegar código sin entenderlo
+- ❌ Dejar TODOs sin explicar o sin ticket
+- ❌ Hardcodear secrets o valores sensibles
+
+---
+
+## 🧾 Commits & Cambios
+
+- Cambios pequeños y bien delimitados
+- Cada cambio debe tener un propósito claro
+- No mezclar refactors con features sin motivo
+
+---
+
+## 📋 Issues y PRs
+
+1. **No hay trabajo sin issue** — Todo debe estar asociado a un issue
+2. **PRs deben linkear issues** — Usar `Closes #XX`
+3. **Actualizar /docs** — Si afecta comportamiento documentado
+
+---
+
+## 🧪 Testing
+
+Si el proyecto tiene tests:
+- Toda nueva funcionalidad debe incluir tests o actualizar existentes
+- Tests deben ser: legibles, deterministas, enfocados en comportamiento
+- No mockear en exceso — preferir tests de integración cuando sea práctico
+
+---
+
+## 🔍 Regla de Auditoría
+
+- No se ejecuta trabajo si la auditoría previa detecta **bloqueo**
+- Si hay bloqueo:
+  - Etiquetar issue como `blocked`
+  - Detener ejecución
+  - Documentar el motivo
+- `GITHUB_BACKLOG.md` es la fuente de verdad para orden de ejecución
+
+---
+
+## ✅ Regla de Oro
+
+Antes de entregar cualquier cosa, pregúntate:
+
+> "¿Esto es lo que entregaría el mejor desarrollador del mundo?"
+
+Si la respuesta no es **sí**, mejora el resultado.
