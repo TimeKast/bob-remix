@@ -26,6 +26,9 @@ public class KeyboardHelper {
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     
     [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+    
+    [DllImport("user32.dll")]
     public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
     
     public const int SW_RESTORE = 9;
@@ -49,9 +52,11 @@ public class KeyboardHelper {
 try {
     $hwnd = [IntPtr]$WindowHandle
     
-    # Bring window to foreground - try multiple times for reliability when called from another app
-    [KeyboardHelper]::ShowWindow($hwnd, [KeyboardHelper]::SW_RESTORE) | Out-Null
-    Start-Sleep -Milliseconds 150
+    # Only restore if minimized - avoid un-snapping from split layouts
+    if ([KeyboardHelper]::IsIconic($hwnd)) {
+        [KeyboardHelper]::ShowWindow($hwnd, [KeyboardHelper]::SW_RESTORE) | Out-Null
+        Start-Sleep -Milliseconds 150
+    }
     [KeyboardHelper]::SetForegroundWindow($hwnd) | Out-Null
     Start-Sleep -Milliseconds 300
     # Second attempt to ensure focus

@@ -33,6 +33,9 @@ public class ChatWriter {
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     
     [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+    
+    [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
     
     [DllImport("user32.dll")]
@@ -65,8 +68,11 @@ public class ChatWriter {
 try {
     $hwnd = [IntPtr]$WindowHandle
     
-    # Quick focus
-    [ChatWriter]::ShowWindow($hwnd, [ChatWriter]::SW_RESTORE) | Out-Null
+    # Only restore if minimized - avoid un-snapping from split layouts
+    if ([ChatWriter]::IsIconic($hwnd)) {
+        [ChatWriter]::ShowWindow($hwnd, [ChatWriter]::SW_RESTORE) | Out-Null
+        Start-Sleep -Milliseconds 100
+    }
     [ChatWriter]::SetForegroundWindow($hwnd) | Out-Null
     Start-Sleep -Milliseconds 200
     

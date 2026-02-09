@@ -141,14 +141,17 @@ try {
     $width = $rect.Right - $rect.Left
     $height = $rect.Bottom - $rect.Top
     
-    # Briefly focus to read pixels
-    [FastDetector]::ShowWindow($hwnd, [FastDetector]::SW_RESTORE) | Out-Null
+    # Only restore if minimized - avoid un-snapping windows from split layouts
+    if ([FastDetector]::IsIconic($hwnd)) {
+        [FastDetector]::ShowWindow($hwnd, [FastDetector]::SW_RESTORE) | Out-Null
+        Start-Sleep -Milliseconds 100
+    }
     [FastDetector]::SetForegroundWindow($hwnd) | Out-Null
     Start-Sleep -Milliseconds 100
     
     # Scroll to bottom using mouse wheel in chat area (right side of window, center height)
     # Chat panel is typically on the right side of VS Code
-    $chatX = $rect.Left + [int]($width * 0.75)  # 75% from left = in chat area
+    $chatX = $rect.Left + [int]($width * 0.88)  # 88% from left = reliably in chat area (far right)
     $chatY = $rect.Top + [int]($height * 0.5)   # Center height
     [FastDetector]::ScrollToBottom($chatX, $chatY)
     Start-Sleep -Milliseconds 150

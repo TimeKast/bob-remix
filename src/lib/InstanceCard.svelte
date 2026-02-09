@@ -85,51 +85,60 @@
     testing = true;
     testResult = "Detecting...";
 
-    const result = await detectUIState(instance.windowHandle);
+    try {
+      const result = await detectUIState(instance.windowHandle);
 
-    if (result) {
-      // STEP 1: Accept all (priority)
-      if (result.hasAcceptButton && result.isBottomButton) {
-        testResult = "Clicking Accept all...";
-        const acceptResult = await clickAcceptButton(
-          instance.windowHandle,
-          result.acceptButtonX,
-          result.acceptButtonY,
-        );
-        testResult = acceptResult ? "✅ Clicked Accept all" : "❌ Click failed";
-      }
-      // STEP 2: Gray button = chat ready
-      else if (result.chatButtonColor === "gray") {
-        if (result.hasRetryButton) {
-          testResult = "❌ Found Retry - click manually";
-        } else if (result.hasEnterButton) {
-          testResult = "Sending prompt...";
-          const prompt = instance.customPrompt || $settings.autoPrompt;
-          const sendResult = await writeToChat(instance.windowHandle, prompt);
-          testResult = sendResult ? "✅ Sent prompt" : "❌ Send failed";
-        } else {
-          testResult = "🟢 Ready but no action";
+      if (result) {
+        // STEP 1: Accept all (priority)
+        if (result.hasAcceptButton && result.isBottomButton) {
+          testResult = "Clicking Accept all...";
+          const acceptResult = await clickAcceptButton(
+            instance.windowHandle,
+            result.acceptButtonX,
+            result.acceptButtonY,
+          );
+          testResult = acceptResult
+            ? "✅ Clicked Accept all"
+            : "❌ Click failed";
         }
-      }
-      // STEP 3: Red button = agent working
-      else if (result.chatButtonColor === "red") {
-        if (result.hasAcceptButton && !result.isBottomButton) {
-          testResult = "Sending Alt+Enter...";
-          const acceptResult = await acceptDialog(instance.windowHandle);
-          testResult = acceptResult ? "✅ Accepted dialog" : "❌ Accept failed";
-        } else {
-          testResult = "🔴 Agent working...";
+        // STEP 2: Gray button = chat ready
+        else if (result.chatButtonColor === "gray") {
+          if (result.hasRetryButton) {
+            testResult = "❌ Found Retry - click manually";
+          } else if (result.hasEnterButton) {
+            testResult = "Sending prompt...";
+            const prompt = instance.customPrompt || $settings.autoPrompt;
+            const sendResult = await writeToChat(instance.windowHandle, prompt);
+            testResult = sendResult ? "✅ Sent prompt" : "❌ Send failed";
+          } else {
+            testResult = "🟢 Ready but no action";
+          }
         }
+        // STEP 3: Red button = agent working
+        else if (result.chatButtonColor === "red") {
+          if (result.hasAcceptButton && !result.isBottomButton) {
+            testResult = "Sending Alt+Enter...";
+            const acceptResult = await acceptDialog(instance.windowHandle);
+            testResult = acceptResult
+              ? "✅ Accepted dialog"
+              : "❌ Accept failed";
+          } else {
+            testResult = "🔴 Agent working...";
+          }
+        }
+        // Unknown state
+        else {
+          testResult = `⚪ Unknown (${result.chatButtonColor})`;
+        }
+      } else {
+        testResult = "Detection failed";
       }
-      // Unknown state
-      else {
-        testResult = `⚪ Unknown (${result.chatButtonColor})`;
-      }
-    } else {
-      testResult = "Detection failed";
+    } catch (error) {
+      testResult = `❌ Error: ${error}`;
+      console.error("Detect & Act error:", error);
+    } finally {
+      testing = false;
     }
-
-    testing = false;
   }
 
   function saveBacklogConfig() {

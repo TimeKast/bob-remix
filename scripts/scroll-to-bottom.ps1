@@ -26,6 +26,9 @@ public class ScrollHelper {
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     
     [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+    
+    [DllImport("user32.dll")]
     public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
     
     public const int SW_RESTORE = 9;
@@ -49,9 +52,11 @@ public class ScrollHelper {
 try {
     $hwnd = [IntPtr]$WindowHandle
     
-    # Bring window to foreground
-    [ScrollHelper]::ShowWindow($hwnd, [ScrollHelper]::SW_RESTORE) | Out-Null
-    Start-Sleep -Milliseconds 100
+    # Only restore if minimized - avoid un-snapping from split layouts
+    if ([ScrollHelper]::IsIconic($hwnd)) {
+        [ScrollHelper]::ShowWindow($hwnd, [ScrollHelper]::SW_RESTORE) | Out-Null
+        Start-Sleep -Milliseconds 100
+    }
     [ScrollHelper]::SetForegroundWindow($hwnd) | Out-Null
     Start-Sleep -Milliseconds 200
     

@@ -46,6 +46,9 @@ public class MouseHelper {
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
     
+    [DllImport("user32.dll")]
+    public static extern bool IsIconic(IntPtr hWnd);
+    
     public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     public const uint MOUSEEVENTF_LEFTUP = 0x0004;
     public const int SW_RESTORE = 9;
@@ -64,8 +67,11 @@ try {
     # Bring window to foreground if handle provided
     if ($WindowHandle -gt 0) {
         $hwnd = [IntPtr]$WindowHandle
-        [MouseHelper]::ShowWindow($hwnd, [MouseHelper]::SW_RESTORE) | Out-Null
-        Start-Sleep -Milliseconds 150
+        # Only restore if minimized - avoid un-snapping from split layouts
+        if ([MouseHelper]::IsIconic($hwnd)) {
+            [MouseHelper]::ShowWindow($hwnd, [MouseHelper]::SW_RESTORE) | Out-Null
+            Start-Sleep -Milliseconds 150
+        }
         [MouseHelper]::SetForegroundWindow($hwnd) | Out-Null
         Start-Sleep -Milliseconds 300
     }
