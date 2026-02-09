@@ -225,11 +225,9 @@ try {
                     }
                 }
                 
-                if ((Test-IsRedButton -R $r -G $g -B $b) -and -not $result.hasRetryButton) {
-                    $result.hasRetryButton = $true
-                    $result.retryButtonX = $screenX
-                    $result.retryButtonY = $screenY
-                }
+                # NOTE: Retry button detection removed from here - single pixel check
+                # caused false positives from red content (emoji, badges) in VS Code.
+                # Retry is properly detected with cluster verification in STEP 2.
             }
         }
     }
