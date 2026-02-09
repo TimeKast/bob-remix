@@ -272,6 +272,57 @@ fn detect_ui_state(window_handle: i64) -> Result<UIStateResult, String> {
             // Single DC for all scanning
             let hdc: HDC = GetDC(std::ptr::null_mut());
 
+            // ===== PIXEL RELIABILITY CHECK =====
+            // On non-primary monitors (negative coords), GetPixel returns all-same values.
+            // Sample 10 diverse points. If they're ALL identical, GetPixel is broken → bail out.
+            let test_points: [(f64, f64); 10] = [
+                (0.3, 0.3),
+                (0.5, 0.5),
+                (0.7, 0.3),
+                (0.3, 0.7),
+                (0.9, 0.9),
+                (0.5, 0.8),
+                (0.8, 0.5),
+                (0.6, 0.6),
+                (0.4, 0.9),
+                (0.9, 0.4),
+            ];
+            let mut first_pixel: Option<u32> = None;
+            let mut all_same = true;
+            for &(xp, yp) in &test_points {
+                let tx = rect.left + (width as f64 * xp) as i32;
+                let ty = rect.top + (height as f64 * yp) as i32;
+                let tp = GetPixel(hdc, tx, ty);
+                if tp == 0xFFFFFFFF {
+                    continue;
+                } // CLR_INVALID, skip
+                match first_pixel {
+                    None => {
+                        first_pixel = Some(tp);
+                    }
+                    Some(fp) => {
+                        if tp != fp {
+                            all_same = false;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if all_same && first_pixel.is_some() {
+                // GetPixel is broken for this window position (all pixels identical)
+                // Return "none" state - frontend should NOT send prompts
+                println!("[detect_ui_state] PIXEL RELIABILITY FAILED: all 10 test pixels returned same value {:?}. Window at L={} T={} R={} B={}",
+                    first_pixel, rect.left, rect.top, rect.right, rect.bottom);
+                ReleaseDC(std::ptr::null_mut(), hdc);
+                result.chat_button_color = "none".to_string();
+                result.error = Some(format!(
+                    "GetPixel unreliable at window position L={} T={}",
+                    rect.left, rect.top
+                ));
+                return Ok(result);
+            }
+
             let step_x = 30;
             let step_y = 25;
 

@@ -841,6 +841,14 @@ async function pollOnce(): Promise<void> {
                 continue;
             }
 
+            // ========== SAFETY: chatButtonColor="none" = unreliable detection ==========
+            // On non-primary monitors, GetPixel can't read pixels - detection returns "none"
+            // Do NOT send prompts - we can't tell if agent is working or idle
+            if (uiState.chatButtonColor === "none") {
+                console.warn(`[${instance.projectName}] Pixel detection unreliable (non-primary monitor?) - skipping. Error: ${uiState.error || 'unknown'}`);
+                continue;
+            }
+
             // ========== STEP 2: Check chat button color ==========
             if (uiState.chatButtonColor === "gray") {
                 // GRAY = Chat is ready for input
