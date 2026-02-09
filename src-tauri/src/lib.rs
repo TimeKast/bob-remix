@@ -387,33 +387,43 @@ pub struct BacklogResult {
     pub error: Option<String>,
 }
 
-/// Read backlog from project path
+/// Read backlog from project path (with optional custom path and mode)
 #[tauri::command]
-fn read_backlog(project_path: String) -> Result<BacklogResult, String> {
-    let script_path = if cfg!(debug_assertions) {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .map(|p| p.join("scripts").join("read-backlog.ps1"))
-            .unwrap_or_else(|| std::path::PathBuf::from("scripts/read-backlog.ps1"))
-    } else {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| {
-                p.parent()
-                    .map(|p| p.join("scripts").join("read-backlog.ps1"))
-            })
-            .unwrap_or_else(|| std::path::PathBuf::from("scripts/read-backlog.ps1"))
-    };
+fn read_backlog(
+    project_path: String,
+    backlog_path: Option<String>,
+    mode: Option<String>,
+) -> Result<BacklogResult, String> {
+    let script_path = get_script_path("read-backlog.ps1");
+
+    let mut args = vec![
+        "-ExecutionPolicy".to_string(),
+        "Bypass".to_string(),
+        "-File".to_string(),
+        script_path
+            .to_str()
+            .unwrap_or("scripts/read-backlog.ps1")
+            .to_string(),
+        "-ProjectPath".to_string(),
+        project_path,
+    ];
+
+    if let Some(ref bp) = backlog_path {
+        if !bp.is_empty() {
+            args.push("-BacklogPath".to_string());
+            args.push(bp.clone());
+        }
+    }
+
+    if let Some(ref m) = mode {
+        if !m.is_empty() {
+            args.push("-Mode".to_string());
+            args.push(m.clone());
+        }
+    }
 
     let output = std::process::Command::new("powershell")
-        .args([
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            script_path.to_str().unwrap_or("scripts/read-backlog.ps1"),
-            "-ProjectPath",
-            &project_path,
-        ])
+        .args(&args)
         .output()
         .map_err(|e| format!("Failed to execute PowerShell: {}", e))?;
 

@@ -2,6 +2,13 @@
 
 export type InstanceStatus = 'idle' | 'working' | 'error' | 'complete' | 'disabled' | 'blocked';
 
+export type BacklogMode = 'auto' | 'file' | 'folder';
+
+export interface BacklogConfig {
+    path: string;        // Relative or absolute path (e.g., "backlog.md", "docs/issues", "plan/backlog")
+    mode: BacklogMode;   // auto = try both, file = single .md with checkboxes, folder = each .md = 1 issue
+}
+
 export interface Instance {
     id: string;
     windowTitle: string;
@@ -23,6 +30,8 @@ export interface Instance {
     blockReason?: string;
     issuesCompleted?: number;
     lastPromptSent?: number;  // Timestamp of last prompt sent (for inactivity timeout)
+    // Backlog configuration
+    backlogConfig?: BacklogConfig;
 }
 
 export interface Settings {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Instance } from "./types";
+  import type { Instance, BacklogMode } from "./types";
   import {
     testInstance,
     detectUIState,
@@ -7,6 +7,7 @@
     acceptDialog,
     writeToChat,
     settings,
+    updateInstanceBacklogConfig,
   } from "./store";
 
   interface Props {
@@ -17,6 +18,9 @@
   let { instance, onToggle }: Props = $props();
   let testResult = $state<string>("");
   let testing = $state(false);
+  let showBacklogConfig = $state(false);
+  let backlogPath = $state(instance.backlogConfig?.path || "");
+  let backlogMode = $state<BacklogMode>(instance.backlogConfig?.mode || "auto");
 
   const statusColors: Record<string, string> = {
     idle: "#ffb800",
@@ -127,6 +131,14 @@
 
     testing = false;
   }
+
+  function saveBacklogConfig() {
+    updateInstanceBacklogConfig(instance.id, {
+      path: backlogPath,
+      mode: backlogMode,
+    });
+    showBacklogConfig = false;
+  }
 </script>
 
 <div
@@ -191,6 +203,57 @@
     {#if instance.isBlocked}
       <div class="blocked-indicator">
         🚫 Bloqueado: {instance.blockReason || "Requiere atención manual"}
+      </div>
+    {/if}
+
+    <!-- Backlog Config -->
+    <div class="backlog-config-row">
+      <button
+        class="btn-config"
+        class:active={showBacklogConfig}
+        onclick={() => (showBacklogConfig = !showBacklogConfig)}
+        title="Configure backlog path"
+      >
+        📂 Backlog
+      </button>
+      {#if instance.backlogConfig?.path}
+        <span class="config-indicator" title={instance.backlogConfig.path}>
+          ✓ {instance.backlogConfig.mode}
+        </span>
+      {/if}
+    </div>
+
+    {#if showBacklogConfig}
+      <div class="backlog-config">
+        <div class="config-field">
+          <label for="backlogPath-{instance.id}">Path</label>
+          <input
+            type="text"
+            id="backlogPath-{instance.id}"
+            bind:value={backlogPath}
+            placeholder="e.g. backlog.md, docs/issues, plan/"
+          />
+          <span class="config-hint"
+            >Relative to project root, or absolute path</span
+          >
+        </div>
+        <div class="config-field">
+          <label for="backlogMode-{instance.id}">Mode</label>
+          <select id="backlogMode-{instance.id}" bind:value={backlogMode}>
+            <option value="auto">🔍 Auto (smart detection)</option>
+            <option value="file">📄 Single File (checkboxes)</option>
+            <option value="folder">📁 Folder (each .md = 1 issue)</option>
+          </select>
+        </div>
+        <div class="config-actions">
+          <button class="btn-config-save" onclick={saveBacklogConfig}
+            >💾 Save</button
+          >
+          <button
+            class="btn-config-cancel"
+            onclick={() => (showBacklogConfig = false)}>✕</button
+          >
+        </div>
       </div>
     {/if}
 
@@ -420,5 +483,116 @@
     font-size: 0.8rem;
     color: #ff6b35;
     margin-top: 0.5rem;
+  }
+
+  .backlog-config-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+  }
+
+  .btn-config {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.7rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    color: #aaa;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .btn-config:hover,
+  .btn-config.active {
+    background: rgba(0, 217, 255, 0.15);
+    border-color: rgba(0, 217, 255, 0.4);
+    color: #00d9ff;
+  }
+
+  .config-indicator {
+    font-size: 0.65rem;
+    color: #00ff88;
+    opacity: 0.8;
+  }
+
+  .backlog-config {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(0, 217, 255, 0.2);
+    border-radius: 8px;
+    padding: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+  }
+
+  .config-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .config-field label {
+    font-size: 0.7rem;
+    opacity: 0.7;
+  }
+
+  .config-field input,
+  .config-field select {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    padding: 0.4rem 0.5rem;
+    color: #fff;
+    font-size: 0.75rem;
+    font-family: inherit;
+  }
+
+  .config-field input:focus,
+  .config-field select:focus {
+    outline: none;
+    border-color: #00d9ff;
+  }
+
+  .config-hint {
+    font-size: 0.6rem;
+    opacity: 0.4;
+    font-style: italic;
+  }
+
+  .config-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+  }
+
+  .btn-config-save {
+    padding: 0.3rem 0.8rem;
+    font-size: 0.7rem;
+    background: linear-gradient(90deg, #00d9ff, #00ff88);
+    border: none;
+    border-radius: 4px;
+    color: #000;
+    cursor: pointer;
+    font-weight: 600;
+  }
+
+  .btn-config-save:hover {
+    transform: translateY(-1px);
+  }
+
+  .btn-config-cancel {
+    padding: 0.3rem 0.5rem;
+    font-size: 0.7rem;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+    color: #888;
+    cursor: pointer;
+  }
+
+  .btn-config-cancel:hover {
+    color: #fff;
   }
 </style>

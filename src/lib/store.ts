@@ -1,7 +1,7 @@
 // Svelte stores for Antigravity Monitor state management
 
 import { writable, get } from 'svelte/store';
-import type { Instance, Settings } from './types';
+import type { Instance, Settings, BacklogConfig } from './types';
 import { invoke } from '@tauri-apps/api/core';
 
 // Default settings
@@ -64,7 +64,7 @@ export const log = {
     async write(level: string, message: string): Promise<void> {
         const currentSettings = get(settings);
         if (!currentSettings.loggingEnabled) return;
-        
+
         try {
             await invoke('write_log', {
                 logPath: currentSettings.logFilePath,
@@ -123,8 +123,16 @@ export async function scanForInstances(): Promise<void> {
             };
         });
 
+        // Restore saved backlog configs from localStorage
+        const savedConfigs = loadSavedBacklogConfigs();
+        for (const inst of newInstances) {
+            if (savedConfigs[inst.projectName] && !inst.backlogConfig) {
+                inst.backlogConfig = savedConfigs[inst.projectName];
+            }
+        }
+
         instances.set(newInstances);
-        
+
         // Update backlog info for each instance (wait for it to complete)
         await updateInstanceBacklogs();
     } catch (error) {
@@ -171,20 +179,25 @@ export async function scanForInstances(): Promise<void> {
 export async function updateInstanceBacklogs(): Promise<void> {
     const currentInstances = get(instances);
     console.log(`[Backlog] Updating ${currentInstances.length} instances...`);
-    
+
     for (const instance of currentInstances) {
         try {
-            console.log(`[${instance.projectName}] Reading backlog from: ${instance.projectPath}`);
-            
+            const config = instance.backlogConfig;
+            console.log(`[${instance.projectName}] Reading backlog from: ${instance.projectPath} (mode: ${config?.mode || 'auto'}, path: ${config?.path || 'default'})`);
+
             const backlog = await invoke<{
                 totalIssues: number;
                 completedIssues: number;
                 currentIssue: string;
                 error?: string;
-            }>('read_backlog', { projectPath: instance.projectPath });
-            
+            }>('read_backlog', {
+                projectPath: instance.projectPath,
+                backlogPath: config?.path || null,
+                mode: config?.mode || null
+            });
+
             console.log(`[${instance.projectName}] Backlog result:`, backlog);
-            
+
             if (backlog && !backlog.error) {
                 instances.update(list =>
                     list.map(i => i.id === instance.id
@@ -207,6 +220,38 @@ export async function updateInstanceBacklogs(): Promise<void> {
     }
 }
 
+// Update backlog config for a specific instance and persist to localStorage
+export function updateInstanceBacklogConfig(instanceId: string, config: BacklogConfig): void {
+    instances.update(list =>
+        list.map(i => i.id === instanceId
+            ? { ...i, backlogConfig: config }
+            : i
+        )
+    );
+    // Persist configs to localStorage
+    const currentInstances = get(instances);
+    const configs: Record<string, BacklogConfig> = {};
+    for (const inst of currentInstances) {
+        if (inst.backlogConfig) {
+            configs[inst.projectName] = inst.backlogConfig;
+        }
+    }
+    if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.setItem('bob-backlog-configs', JSON.stringify(configs));
+    }
+}
+
+// Load saved backlog configs from localStorage
+export function loadSavedBacklogConfigs(): Record<string, BacklogConfig> {
+    if (typeof window !== 'undefined' && window.localStorage) {
+        const saved = localStorage.getItem('bob-backlog-configs');
+        if (saved) {
+            return JSON.parse(saved);
+        }
+    }
+    return {};
+}
+
 // Refresh instances (update status, don't rescan)
 export async function refreshInstances(): Promise<void> {
     const currentInstances = get(instances);
@@ -223,8 +268,8 @@ export async function refreshInstances(): Promise<void> {
             // Don't overwrite fields managed by polling (stepCount, retryCount, backlog fields)
             // Only update status and lastActivity from get_instance_status
             instances.update(list =>
-                list.map(i => i.id === instance.id ? { 
-                    ...i, 
+                list.map(i => i.id === instance.id ? {
+                    ...i,
                     status: status.status,
                     lastActivity: status.lastActivity
                     // NOT including: stepCount, retryCount, totalIssues, currentIssue, issuesCompleted
@@ -351,9 +396,13 @@ interface BacklogResult {
 }
 
 // Read backlog from project path
-export async function readBacklog(projectPath: string): Promise<BacklogResult | null> {
+export async function readBacklog(projectPath: string, config?: BacklogConfig): Promise<BacklogResult | null> {
     try {
-        const result = await invoke<BacklogResult>('read_backlog', { projectPath });
+        const result = await invoke<BacklogResult>('read_backlog', {
+            projectPath,
+            backlogPath: config?.path || null,
+            mode: config?.mode || null
+        });
         return result;
     } catch (error) {
         console.error('Failed to read backlog:', error);
@@ -560,9 +609,9 @@ export async function sendAutoPrompt(instanceId: string): Promise<string> {
         if (success) {
             instances.update(list =>
                 list.map(i => i.id === instanceId
-                    ? { 
-                        ...i, 
-                        lastActivity: Date.now(), 
+                    ? {
+                        ...i,
+                        lastActivity: Date.now(),
                         stepCount: i.stepCount + 1,
                         status: 'working' as const
                     }
@@ -589,10 +638,10 @@ async function notifyStopCondition(instance: Instance, condition: string): Promi
     if (!shouldNotify) return;
 
     try {
-        const title = isComplete 
+        const title = isComplete
             ? `✅ ${instance.projectName} - Backlog Completado`
             : `⚠️ ${instance.projectName} - Requiere Atención`;
-        
+
         const message = isComplete
             ? `El backlog ha sido completado exitosamente. Issues completados: ${instance.issuesCompleted || 0}`
             : `Condición detectada: ${condition}. Requiere intervención manual.`;
@@ -613,27 +662,27 @@ let pollingTimeout: ReturnType<typeof setTimeout> | null = null;
 async function pollOnce(): Promise<void> {
     const currentInstances = get(instances);
     const currentSettings = get(settings);
-    
+
     for (const instance of currentInstances) {
         if (!pollingActive) break; // Check if stopped
         if (!instance.enabled || instance.isBlocked) continue;
-        
+
         // ========== INACTIVITY TIMEOUT CHECK ==========
         // If no prompt sent in X minutes, stop project and notify Discord
         const inactivityMs = currentSettings.inactivityTimeoutMinutes * 60 * 1000;
         const lastPrompt = instance.lastPromptSent || 0;
         const timeSinceLastPrompt = Date.now() - lastPrompt;
-        
+
         if (lastPrompt > 0 && timeSinceLastPrompt > inactivityMs) {
             const minutesInactive = Math.round(timeSinceLastPrompt / 60000);
             console.log(`[${instance.projectName}] ⏰ Inactivity timeout: ${minutesInactive} minutes since last prompt`);
-            
+
             // Disable the instance
             instances.update(list =>
                 list.map(i => i.id === instance.id
-                    ? { 
-                        ...i, 
-                        enabled: false, 
+                    ? {
+                        ...i,
+                        enabled: false,
                         status: 'error' as const,
                         isBlocked: true,
                         blockReason: `Inactivity timeout: ${minutesInactive} min`
@@ -641,7 +690,7 @@ async function pollOnce(): Promise<void> {
                     : i
                 )
             );
-            
+
             // Send Discord notification
             if (currentSettings.discordWebhook && currentSettings.notifyOnError) {
                 try {
@@ -655,30 +704,35 @@ async function pollOnce(): Promise<void> {
                     console.error(`[${instance.projectName}] Failed to send inactivity notification:`, e);
                 }
             }
-            
+
             continue; // Skip further processing for this instance
         }
-        
+
         // Update backlog for this instance on every poll (with timeout)
         try {
             const backlogTimeout = new Promise<null>((_, reject) =>
                 setTimeout(() => reject(new Error('Backlog timeout')), 20000)
             );
-            
+
+            const config = instance.backlogConfig;
             const backlogPromise = invoke<{
                 totalIssues: number;
                 completedIssues: number;
                 currentIssue: string;
                 error?: string;
-            }>('read_backlog', { projectPath: instance.projectPath });
-            
+            }>('read_backlog', {
+                projectPath: instance.projectPath,
+                backlogPath: config?.path || null,
+                mode: config?.mode || null
+            });
+
             const backlog = await Promise.race([backlogPromise, backlogTimeout]) as {
                 totalIssues: number;
                 completedIssues: number;
                 currentIssue: string;
                 error?: string;
             } | null;
-            
+
             if (backlog && !backlog.error) {
                 instances.update(list =>
                     list.map(i => i.id === instance.id
@@ -691,18 +745,18 @@ async function pollOnce(): Promise<void> {
                         : i
                     )
                 );
-                
+
                 // ========== CHECK FOR PROJECT COMPLETION ==========
                 // If all issues are completed, disable and notify
                 if (backlog.totalIssues > 0 && backlog.completedIssues >= backlog.totalIssues) {
                     console.log(`[${instance.projectName}] 🎉 All issues completed (${backlog.completedIssues}/${backlog.totalIssues})`);
-                    
+
                     // Update instance to disabled and completed
                     instances.update(list =>
                         list.map(i => i.id === instance.id
-                            ? { 
-                                ...i, 
-                                enabled: false, 
+                            ? {
+                                ...i,
+                                enabled: false,
                                 status: 'complete' as const,
                                 isBlocked: true,
                                 blockReason: 'All issues completed'
@@ -710,7 +764,7 @@ async function pollOnce(): Promise<void> {
                             : i
                         )
                     );
-                    
+
                     // Send Discord notification
                     if (currentSettings.discordWebhook && currentSettings.notifyOnComplete) {
                         try {
@@ -724,30 +778,30 @@ async function pollOnce(): Promise<void> {
                             console.error(`[${instance.projectName}] Failed to send completion notification:`, e);
                         }
                     }
-                    
+
                     continue; // Skip further processing for this instance
                 }
             }
         } catch (e) {
             // Ignore backlog read errors, continue with detection
         }
-        
+
         try {
             // Add timeout protection - max 45 seconds per instance
-            const timeoutPromise = new Promise<null>((_, reject) => 
+            const timeoutPromise = new Promise<null>((_, reject) =>
                 setTimeout(() => reject(new Error('Timeout')), 45000)
             );
-            
+
             const detectPromise = detectUIState(instance.windowHandle);
             const uiState = await Promise.race([detectPromise, timeoutPromise]);
-            
+
             console.log(`[${instance.projectName}] UI State received:`, JSON.stringify(uiState));
-            
+
             if (!uiState || !pollingActive) {
                 console.log(`[${instance.projectName}] Skipping - uiState null or polling stopped`);
                 continue;
             }
-            
+
             // DEBUG: Log what we received
             console.log(`[${instance.projectName}] UI State: chatButtonColor=${uiState.chatButtonColor}, hasEnterButton=${uiState.hasEnterButton}, hasAcceptButton=${uiState.hasAcceptButton}`);
 
@@ -768,7 +822,7 @@ async function pollOnce(): Promise<void> {
             // ========== STEP 2: Check chat button color ==========
             if (uiState.chatButtonColor === "gray") {
                 // GRAY = Chat is ready for input
-                
+
                 // First check for Retry button
                 if (uiState.hasRetryButton) {
                     // Read maxRetries from current settings (not instance copy)
@@ -798,20 +852,20 @@ async function pollOnce(): Promise<void> {
                     }
                     continue;
                 }
-                
+
                 // No Retry - send prompt (hasEnterButton should be true)
                 if (uiState.hasEnterButton) {
                     const prompt = instance.customPrompt || currentSettings.autoPrompt;
                     console.log(`[${instance.projectName}] Chat ready - sending prompt: "${prompt.substring(0, 50)}..."`);
-                    
+
                     const writeResult = await writeToChat(instance.windowHandle, prompt);
                     console.log(`[${instance.projectName}] writeToChat result: ${writeResult}`);
-                    
+
                     instances.update(list =>
                         list.map(i => i.id === instance.id
-                            ? { 
-                                ...i, 
-                                lastActivity: Date.now(), 
+                            ? {
+                                ...i,
+                                lastActivity: Date.now(),
                                 lastPromptSent: Date.now(),  // Track when prompt was sent
                                 stepCount: i.stepCount + 1,
                                 retryCount: 0,
@@ -823,7 +877,7 @@ async function pollOnce(): Promise<void> {
                 }
                 continue;
             }
-            
+
             // ========== STEP 3: Red button = Agent working, may have Accept dialog ==========
             if (uiState.chatButtonColor === "red") {
                 // Check if there's an Accept dialog (Run command?, etc.)
@@ -843,7 +897,7 @@ async function pollOnce(): Promise<void> {
                 }
                 continue;
             }
-            
+
             // ========== STEP 4: Accept dialog detected but chatButtonColor unknown ==========
             // This can happen when the dialog appears but we couldn't sample the chat button
             if (uiState.hasAcceptButton && !uiState.isBottomButton) {
@@ -858,7 +912,7 @@ async function pollOnce(): Promise<void> {
                 );
                 continue;
             }
-            
+
             // ========== Unknown state - try to scroll to bottom ==========
             // This can happen when scroll is stuck at top and we can't see the buttons
             console.log(`[${instance.projectName}] Unknown state - scrolling to bottom (chatButtonColor: ${uiState.chatButtonColor})`);
@@ -876,16 +930,16 @@ async function pollOnce(): Promise<void> {
 
 function scheduleNextPoll(intervalMs: number): void {
     if (!pollingActive) return;
-    
+
     pollingTimeout = setTimeout(async () => {
         if (!pollingActive) return;
-        
+
         try {
             await pollOnce();
         } catch (error) {
             console.error('Poll cycle error:', error);
         }
-        
+
         // Schedule next poll
         scheduleNextPoll(intervalMs);
     }, intervalMs);
@@ -899,13 +953,13 @@ export function startAutoImplementation(intervalMs?: number): void {
         console.log('Polling already active');
         return;
     }
-    
+
     pollingActive = true;
     console.log(`Starting auto-implementation polling every ${pollInterval}ms`);
-    
+
     // Update backlog info immediately when starting
     updateInstanceBacklogs();
-    
+
     // Setup periodic backlog refresh (every 15 minutes)
     const backlogRefreshInterval = setInterval(() => {
         if (pollingActive) {
@@ -915,7 +969,7 @@ export function startAutoImplementation(intervalMs?: number): void {
             clearInterval(backlogRefreshInterval);
         }
     }, 15 * 60 * 1000); // 15 minutes
-    
+
     // Start first poll immediately, then schedule subsequent ones
     pollOnce().then(() => {
         scheduleNextPoll(pollInterval);
