@@ -17,6 +17,9 @@ using System.Runtime.InteropServices;
 
 public class FastDetector {
     [DllImport("user32.dll")]
+    public static extern bool SetProcessDPIAware();
+    
+    [DllImport("user32.dll")]
     public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
     
     [DllImport("user32.dll")]
@@ -103,6 +106,9 @@ function Test-IsGrayArrowButton {
 }
 
 try {
+    # Make process DPI-aware so GetPixel works on all monitors
+    [FastDetector]::SetProcessDPIAware() | Out-Null
+    
     $hwnd = [IntPtr]$WindowHandle
     
     $result = @{
@@ -231,12 +237,19 @@ try {
     [FastDetector]::ReleaseDC([IntPtr]::Zero, $hdc) | Out-Null
     
     # ========== THIRD: Check for PAUSE button (red square in bottom-right) ==========
+    # DEBUG: Log window rect for diagnosis
+    Write-Host "[DEBUG] Window rect: Left=$($rect.Left) Top=$($rect.Top) Right=$($rect.Right) Bottom=$($rect.Bottom) W=$width H=$height" -NoNewline | Out-Null
+    [Console]::Error.WriteLine("[DEBUG] Window rect: Left=$($rect.Left) Top=$($rect.Top) Right=$($rect.Right) Bottom=$($rect.Bottom) W=$width H=$height")
+    
     $hdc2 = [FastDetector]::GetDC([IntPtr]::Zero)
     
-    $pauseStartX = [int]($width * 0.93)
-    $pauseEndX = [int]($width * 0.99)
-    $pauseStartY = [int]($height * 0.90)
-    $pauseEndY = [int]($height * 0.98)
+    $pauseStartX = [int]($width * 0.80)
+    $pauseEndX = [int]($width * 0.97)
+    $pauseStartY = [int]($height * 0.80)
+    $pauseEndY = [int]($height * 0.97)
+    
+    # DEBUG: Log some sample colors from the pause area
+    $debugSamples = @()
     
     for ($y = $pauseStartY; $y -lt $pauseEndY -and -not $result.isPaused; $y += 10) {
         for ($x = $pauseStartX; $x -lt $pauseEndX; $x += 10) {
@@ -247,6 +260,11 @@ try {
             $r = $pixel -band 0xFF
             $g = ($pixel -shr 8) -band 0xFF
             $b = ($pixel -shr 16) -band 0xFF
+            
+            # Collect debug samples (first 5)
+            if ($debugSamples.Count -lt 5) {
+                $debugSamples += "($screenX,$screenY)=R$r,G$g,B$b"
+            }
             
             if ($r -ge 180 -and $g -lt 100 -and $b -lt 100) {
                 $px1 = [FastDetector]::GetPixel($hdc2, $screenX + 5, $screenY)
@@ -263,6 +281,8 @@ try {
         }
     }
     
+    [Console]::Error.WriteLine("[DEBUG] Pause scan area: x=$pauseStartX-$pauseEndX y=$pauseStartY-$pauseEndY | isPaused=$($result.isPaused) | Samples: $($debugSamples -join '; ')")
+    
     [FastDetector]::ReleaseDC([IntPtr]::Zero, $hdc2) | Out-Null
     
     # ========== STEP 2: Check chat button color ==========
@@ -275,13 +295,13 @@ try {
         else {
             # Normal corner scan for chat button color
             $hdc3 = [FastDetector]::GetDC([IntPtr]::Zero)
-            
+            $cornerDebugCount = 0
             $foundGray = $false
             $foundRed = $false
             $foundBlue = $false
             
-            foreach ($xOffset in @(10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100)) {
-                foreach ($yOffset in @(25, 30, 35, 40, 50, 60, 70, 80, 90, 100, 110, 120)) {
+            foreach ($xOffset in @(30, 40, 50, 60, 70, 80, 100, 120, 140, 160, 180, 200, 220, 250, 300)) {
+                foreach ($yOffset in @(20, 30, 40, 50, 60, 70, 80, 100, 120, 140, 160, 180, 200)) {
                     if ($foundGray -or $foundRed -or $foundBlue) { break }
                     
                     $screenX = $rect.Right - $xOffset
@@ -300,6 +320,12 @@ try {
                     if ($isGray -and $isSimilar) { $foundGray = $true }
                     if ($isRed) { $foundRed = $true }
                     if ($isBlue) { $foundBlue = $true }
+                    
+                    # DEBUG: Log first few corner samples
+                    if ($cornerDebugCount -lt 5) {
+                        [Console]::Error.WriteLine("[DEBUG] Corner ($screenX,$screenY): R=$r G=$g B=$b gray=$($isGray -and $isSimilar) red=$isRed blue=$isBlue")
+                        $cornerDebugCount++
+                    }
                 }
             }
             
