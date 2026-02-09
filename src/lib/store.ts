@@ -819,6 +819,28 @@ async function pollOnce(): Promise<void> {
                 continue;
             }
 
+            // ========== SAFETY: isPaused overrides chatButtonColor ==========
+            // If isPaused is true (red square detected), agent is working even if
+            // chatButtonColor is "gray" (dialog may cover the corner red button)
+            if (uiState.isPaused && uiState.chatButtonColor !== "red") {
+                console.log(`[${instance.projectName}] isPaused=true but chatButtonColor=${uiState.chatButtonColor} - treating as working`);
+                // Check for Accept dialog (Run command?, etc.)
+                if (uiState.hasAcceptButton && !uiState.isBottomButton) {
+                    console.log(`[${instance.projectName}] Found Accept dialog while paused, sending Alt+Enter`);
+                    const acceptResult = await acceptDialog(instance.windowHandle);
+                    console.log(`[${instance.projectName}] Accept dialog result: ${acceptResult}`);
+                    instances.update(list =>
+                        list.map(i => i.id === instance.id
+                            ? { ...i, lastActivity: Date.now(), retryCount: 0 }
+                            : i
+                        )
+                    );
+                } else {
+                    console.log(`[${instance.projectName}] Agent working (isPaused) - waiting...`);
+                }
+                continue;
+            }
+
             // ========== STEP 2: Check chat button color ==========
             if (uiState.chatButtonColor === "gray") {
                 // GRAY = Chat is ready for input
