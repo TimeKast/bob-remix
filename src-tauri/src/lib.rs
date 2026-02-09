@@ -191,62 +191,270 @@ pub struct UIStateResult {
     pub error: Option<String>,
 }
 
-/// Detect UI state (buttons) for a window using PowerShell
+/// Detect UI state using native Win32 API (no PowerShell overhead)
 #[tauri::command]
 fn detect_ui_state(window_handle: i64) -> Result<UIStateResult, String> {
-    let script_path = get_script_path("detect-ui-state.ps1");
+    use std::time::Instant;
+    let start = Instant::now();
 
-    println!("[detect_ui_state] Script path: {:?}", script_path);
-    println!("[detect_ui_state] Script exists: {}", script_path.exists());
-    println!("[detect_ui_state] Window handle: {}", window_handle);
+    #[cfg(target_os = "windows")]
+    {
+        use winapi::shared::windef::{HDC, HWND, RECT};
+        use winapi::um::wingdi::GetPixel;
+        use winapi::um::winuser::{
+            GetDC, GetWindowRect, IsIconic, ReleaseDC, SendInput, SetCursorPos,
+            SetForegroundWindow, SetProcessDPIAware, ShowWindow, INPUT, MOUSEEVENTF_WHEEL,
+        };
 
-    let output = Command::new("powershell")
-        .args([
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            script_path
-                .to_str()
-                .unwrap_or("scripts/detect-ui-state.ps1"),
-            "-WindowHandle",
-            &window_handle.to_string(),
-        ])
-        .output()
-        .map_err(|e| format!("Failed to execute PowerShell: {}", e))?;
+        unsafe {
+            SetProcessDPIAware();
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+            let hwnd = window_handle as HWND;
 
-    println!("[detect_ui_state] stdout: {}", stdout);
-    println!("[detect_ui_state] stderr: {}", stderr);
-    println!("[detect_ui_state] exit code: {:?}", output.status.code());
+            let mut result = UIStateResult {
+                has_accept_button: false,
+                has_enter_button: false,
+                has_retry_button: false,
+                is_paused: false,
+                chat_button_color: String::from("none"),
+                accept_button_x: 0,
+                accept_button_y: 0,
+                enter_button_x: 0,
+                enter_button_y: 0,
+                retry_button_x: 0,
+                retry_button_y: 0,
+                is_bottom_button: false,
+                error: None,
+            };
 
-    // Try to parse JSON from output
-    if let Some(json_match) = stdout.find('{') {
-        let json_str = &stdout[json_match..];
-        if let Some(end) = json_str.rfind('}') {
-            let json = &json_str[..=end];
-            return serde_json::from_str(json)
-                .map_err(|e| format!("Failed to parse JSON: {} - Output: {}", e, json));
+            // Check if minimized
+            if IsIconic(hwnd) != 0 {
+                result.error = Some("Window is minimized".to_string());
+                return Ok(result);
+            }
+
+            // Get window rect
+            let mut rect: RECT = std::mem::zeroed();
+            GetWindowRect(hwnd, &mut rect);
+            let width = rect.right - rect.left;
+            let height = rect.bottom - rect.top;
+
+            if width <= 0 || height <= 0 {
+                result.error = Some("Invalid window size".to_string());
+                return Ok(result);
+            }
+
+            // Only restore if minimized
+            if IsIconic(hwnd) != 0 {
+                ShowWindow(hwnd, 9); // SW_RESTORE
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            SetForegroundWindow(hwnd);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            // Scroll to bottom (mouse wheel in chat area)
+            let chat_x = rect.left + (width as f64 * 0.88) as i32;
+            let chat_y = rect.top + (height as f64 * 0.5) as i32;
+            SetCursorPos(chat_x, chat_y);
+            std::thread::sleep(std::time::Duration::from_millis(30));
+
+            for _ in 0..5 {
+                let mut input: INPUT = std::mem::zeroed();
+                input.type_ = 0; // INPUT_MOUSE
+                let mi = input.u.mi_mut();
+                mi.dwFlags = MOUSEEVENTF_WHEEL;
+                mi.mouseData = (-120 * 10) as u32; // Scroll down aggressively
+                SendInput(1, &mut input, std::mem::size_of::<INPUT>() as i32);
+                std::thread::sleep(std::time::Duration::from_millis(15));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(80));
+
+            // Single DC for all scanning
+            let hdc: HDC = GetDC(std::ptr::null_mut());
+
+            let step_x = 30;
+            let step_y = 25;
+
+            // ===== PASS 1: Scan for Accept/Run buttons (blue/green/teal) =====
+            let scan_start_x = (width as f64 * 0.50) as i32;
+            let scan_end_x = (width as f64 * 0.98) as i32;
+            let scan_start_y = (height as f64 * 0.15) as i32;
+            let scan_end_y = (height as f64 * 0.98) as i32;
+
+            let mut y = scan_end_y;
+            while y > scan_start_y && !result.has_accept_button {
+                let mut x = scan_start_x;
+                while x < scan_end_x {
+                    let sx = rect.left + x;
+                    let sy = rect.top + y;
+
+                    let pixel = GetPixel(hdc, sx, sy);
+                    if pixel == 0xFFFFFFFF {
+                        x += step_x;
+                        continue;
+                    } // CLR_INVALID
+
+                    let r = pixel & 0xFF;
+                    let g = (pixel >> 8) & 0xFF;
+                    let b = (pixel >> 16) & 0xFF;
+
+                    // Blue/Green/Teal button
+                    if r < 100 && g >= 100 && b >= 150 {
+                        // Verify neighbor
+                        let px1 = GetPixel(hdc, sx + 25, sy);
+                        let r1 = px1 & 0xFF;
+                        let g1 = (px1 >> 8) & 0xFF;
+                        let b1 = (px1 >> 16) & 0xFF;
+
+                        if r1 < 100 && g1 >= 100 && b1 >= 150 {
+                            result.has_accept_button = true;
+                            result.accept_button_x = sx + 15;
+                            result.accept_button_y = sy;
+                            result.is_bottom_button = y > (height as f64 * 0.65) as i32;
+                            break;
+                        }
+                    }
+
+                    x += step_x;
+                }
+                y -= step_y;
+            }
+
+            // ===== PASS 2: Check for pause/stop (red square) =====
+            if !result.has_accept_button {
+                let pause_start_x = (width as f64 * 0.80) as i32;
+                let pause_end_x = (width as f64 * 0.97) as i32;
+                let pause_start_y = (height as f64 * 0.82) as i32;
+                let pause_end_y = (height as f64 * 0.97) as i32;
+
+                let mut y = pause_start_y;
+                'pause_outer: while y < pause_end_y {
+                    let mut x = pause_start_x;
+                    while x < pause_end_x {
+                        let sx = rect.left + x;
+                        let sy = rect.top + y;
+
+                        let pixel = GetPixel(hdc, sx, sy);
+                        let r = pixel & 0xFF;
+                        let g = (pixel >> 8) & 0xFF;
+                        let b = (pixel >> 16) & 0xFF;
+
+                        if r >= 180 && g < 100 && b < 100 {
+                            // Quick neighbor verify
+                            let px1 = GetPixel(hdc, sx + 5, sy);
+                            if (px1 & 0xFF) >= 180 {
+                                result.is_paused = true;
+                                result.chat_button_color = "red".to_string();
+                                break 'pause_outer;
+                            }
+                        }
+                        x += 12;
+                    }
+                    y += 12;
+                }
+            }
+
+            // ===== PASS 3: Determine chat state =====
+            if !result.has_accept_button && !result.is_paused {
+                let mut found_red = false;
+
+                let x_offsets = [30, 50, 80, 120, 160, 200, 250];
+                let y_offsets = [30, 50, 70, 100, 130, 160];
+
+                for &xo in &x_offsets {
+                    if found_red {
+                        break;
+                    }
+                    for &yo in &y_offsets {
+                        let sx = rect.right - xo;
+                        let sy = rect.bottom - yo;
+
+                        let pixel = GetPixel(hdc, sx, sy);
+                        let r = pixel & 0xFF;
+                        let g = (pixel >> 8) & 0xFF;
+                        let b = (pixel >> 16) & 0xFF;
+
+                        if r >= 150 && g < 100 && b < 100 {
+                            found_red = true;
+                            break;
+                        }
+                    }
+                }
+
+                if found_red {
+                    result.chat_button_color = "red".to_string();
+                    result.is_paused = true;
+                } else {
+                    result.chat_button_color = "gray".to_string();
+
+                    // Check for Retry button with cluster verification
+                    let retry_start_y = (height as f64 * 0.55) as i32;
+                    let retry_end_y = (height as f64 * 0.95) as i32;
+                    let retry_start_x = (width as f64 * 0.55) as i32;
+                    let retry_end_x = (width as f64 * 0.95) as i32;
+
+                    let mut ry = retry_end_y;
+                    'retry_outer: while ry > retry_start_y {
+                        let mut rx = retry_start_x;
+                        while rx < retry_end_x {
+                            let px = rect.left + rx;
+                            let py = rect.top + ry;
+
+                            let pxl = GetPixel(hdc, px, py);
+                            let pr = pxl & 0xFF;
+                            let pg = (pxl >> 8) & 0xFF;
+                            let pb = (pxl >> 16) & 0xFF;
+
+                            // Blue Retry button
+                            if pr < 100 && pg >= 100 && pg <= 200 && pb >= 180 {
+                                let mut blue_count = 1u32;
+                                for check_x in (10..=40).step_by(10) {
+                                    let cpx = GetPixel(hdc, px + check_x, py);
+                                    let cr = cpx & 0xFF;
+                                    let cg = (cpx >> 8) & 0xFF;
+                                    let cb = (cpx >> 16) & 0xFF;
+                                    if cr < 100 && cg >= 100 && cb >= 180 {
+                                        blue_count += 1;
+                                    }
+                                }
+
+                                if blue_count >= 3 {
+                                    result.has_retry_button = true;
+                                    result.retry_button_x = px + 20;
+                                    result.retry_button_y = py;
+                                    break 'retry_outer;
+                                }
+                            }
+                            rx += 25;
+                        }
+                        ry -= 20;
+                    }
+
+                    // If no Retry, chat is ready
+                    if !result.has_retry_button {
+                        result.has_enter_button = true;
+                        result.enter_button_x = rect.right - 60;
+                        result.enter_button_y = rect.bottom - 50;
+                    }
+                }
+            }
+
+            ReleaseDC(std::ptr::null_mut(), hdc);
+
+            let elapsed = start.elapsed().as_millis();
+            println!(
+                "[detect_ui_state] Native detection completed in {}ms",
+                elapsed
+            );
+
+            return Ok(result);
         }
     }
 
-    // Return default state if parsing failed
-    Ok(UIStateResult {
-        has_accept_button: false,
-        has_enter_button: false,
-        has_retry_button: false,
-        is_paused: false,
-        chat_button_color: String::from("none"),
-        accept_button_x: 0,
-        accept_button_y: 0,
-        enter_button_x: 0,
-        enter_button_y: 0,
-        retry_button_x: 0,
-        retry_button_y: 0,
-        is_bottom_button: false,
-        error: Some(format!("No valid JSON found in output: {}", stdout)),
-    })
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("UI detection only supported on Windows".to_string())
+    }
 }
 
 /// Click a button at screen coordinates

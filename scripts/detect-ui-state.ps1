@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Detects UI state of Antigravity in VS Code window (Fast version)
+    Detects UI state of Antigravity in VS Code window (Optimized)
 
 .PARAMETER WindowHandle
     Handle of the VS Code window to scan
@@ -50,10 +50,6 @@ public class FastDetector {
     
     public const int SW_RESTORE = 9;
     
-    // Mouse scroll for chat panel
-    [DllImport("user32.dll")]
-    public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
-    
     [DllImport("user32.dll")]
     public static extern bool SetCursorPos(int X, int Y);
     
@@ -63,50 +59,19 @@ public class FastDetector {
     public const uint MOUSEEVENTF_WHEEL = 0x0800;
     public const int WHEEL_DELTA = 120;
     
+    // Faster scroll - fewer iterations, bigger deltas
     public static void ScrollToBottom(int x, int y) {
-        // Move cursor to chat area
         SetCursorPos(x, y);
-        System.Threading.Thread.Sleep(50);
-        
-        // Scroll down aggressively (negative = down)
-        for (int i = 0; i < 10; i++) {
-            mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -WHEEL_DELTA * 5, UIntPtr.Zero);
-            System.Threading.Thread.Sleep(30);
+        System.Threading.Thread.Sleep(30);
+        for (int i = 0; i < 5; i++) {
+            mouse_event(MOUSEEVENTF_WHEEL, 0, 0, -WHEEL_DELTA * 10, UIntPtr.Zero);
+            System.Threading.Thread.Sleep(15);
         }
     }
 }
 "@
 
-function Test-IsGreenAcceptButton {
-    param([int]$R, [int]$G, [int]$B)
-    # Detect BOTH blue Accept buttons AND green/teal Accept all buttons
-    
-    # BLUE Accept button (VS Code dark theme dialog buttons)
-    $isBlueButton = ($R -lt 100 -and $G -ge 100 -and $G -le 200 -and $B -ge 180)
-    
-    # GREEN/TEAL Accept all button (file changes panel)
-    $isGreenButton = ($R -lt 80 -and $G -ge 160 -and $B -ge 100 -and $B -le 200)
-    
-    # Teal/Cyan button (some themes)
-    $isTeal = ($R -lt 80 -and $G -ge 150 -and $B -ge 150)
-    
-    return $isBlueButton -or $isGreenButton -or $isTeal
-}
-
-function Test-IsRedButton {
-    param([int]$R, [int]$G, [int]$B)
-    return ($R -ge 200 -and $G -lt 80 -and $B -lt 80)
-}
-
-function Test-IsGrayArrowButton {
-    param([int]$R, [int]$G, [int]$B)
-    $isGray = ($R -ge 80 -and $R -le 180 -and $G -ge 80 -and $G -le 180 -and $B -ge 80 -and $B -le 180)
-    $isSimilar = ([Math]::Abs($R - $G) -lt 30 -and [Math]::Abs($G - $B) -lt 30 -and [Math]::Abs($R - $B) -lt 30)
-    return $isGray -and $isSimilar
-}
-
 try {
-    # Make process DPI-aware so GetPixel works on all monitors
     [FastDetector]::SetProcessDPIAware() | Out-Null
     
     $hwnd = [IntPtr]$WindowHandle
@@ -127,48 +92,46 @@ try {
         enterButtonY    = 0
     }
     
-    # Check minimized
     if ([FastDetector]::IsIconic($hwnd)) {
         $result.windowMinimized = $true
         $result | ConvertTo-Json -Compress
         exit
     }
     
-    # Get window rect
     $rect = New-Object FastDetector+RECT
     [FastDetector]::GetWindowRect($hwnd, [ref]$rect) | Out-Null
-    
     $width = $rect.Right - $rect.Left
     $height = $rect.Bottom - $rect.Top
     
-    # Only restore if minimized - avoid un-snapping windows from split layouts
+    # Only restore if minimized
     if ([FastDetector]::IsIconic($hwnd)) {
         [FastDetector]::ShowWindow($hwnd, [FastDetector]::SW_RESTORE) | Out-Null
-        Start-Sleep -Milliseconds 100
+        Start-Sleep -Milliseconds 50
     }
     [FastDetector]::SetForegroundWindow($hwnd) | Out-Null
-    Start-Sleep -Milliseconds 100
+    Start-Sleep -Milliseconds 50
     
-    # Scroll to bottom in chat area (far right side)
+    # Quick scroll to bottom
     $chatX = $rect.Left + [int]($width * 0.88)
     $chatY = $rect.Top + [int]($height * 0.5)
     [FastDetector]::ScrollToBottom($chatX, $chatY)
-    Start-Sleep -Milliseconds 150
+    Start-Sleep -Milliseconds 80
     
+    # ===== SINGLE DC for ALL scanning =====
     $hdc = [FastDetector]::GetDC([IntPtr]::Zero)
     
-    $stepX = 25
-    $stepY = 20
-    $startX = [int]($width * 0.5)
-    $endX = [int]($width * 0.98)
+    $stepX = 30
+    $stepY = 25
     
-    # ========== FIRST: Check for Accept all button (bottom-right, green/teal) ==========
-    $acceptAllStartX = [int]($width * 0.70)
-    $bottomStartY = [int]($height * 0.65)
-    $bottomEndY = [int]($height * 0.98)
+    # ========== PASS 1: Scan right side for Accept buttons + blue buttons ==========
+    # This covers Accept all (bottom), dialog Accept/Run (middle), in ONE pass from top to bottom
+    $scanStartX = [int]($width * 0.50)
+    $scanEndX = [int]($width * 0.98)
+    $scanStartY = [int]($height * 0.15)
+    $scanEndY = [int]($height * 0.98)
     
-    for ($y = $bottomEndY; $y -gt $bottomStartY -and -not $result.hasAcceptButton; $y -= $stepY) {
-        for ($x = $acceptAllStartX; $x -lt $endX; $x += $stepX) {
+    for ($y = $scanEndY; $y -gt $scanStartY -and -not $result.hasAcceptButton; $y -= $stepY) {
+        for ($x = $scanStartX; $x -lt $scanEndX; $x += $stepX) {
             $screenX = $rect.Left + $x
             $screenY = $rect.Top + $y
             
@@ -177,31 +140,37 @@ try {
             $g = ($pixel -shr 8) -band 0xFF
             $b = ($pixel -shr 16) -band 0xFF
             
-            if (Test-IsGreenAcceptButton -R $r -G $g -B $b) {
-                $px1 = [FastDetector]::GetPixel($hdc, $screenX + 20, $screenY)
+            # Blue/Green/Teal button detection (Accept, Run, Accept all)
+            $isButton = ($r -lt 100 -and $g -ge 100 -and $b -ge 150)
+            
+            if ($isButton) {
+                # Quick neighbor check (1 pixel only for speed)
+                $px1 = [FastDetector]::GetPixel($hdc, $screenX + 25, $screenY)
                 $r1 = $px1 -band 0xFF; $g1 = ($px1 -shr 8) -band 0xFF; $b1 = ($px1 -shr 16) -band 0xFF
+                $isButton1 = ($r1 -lt 100 -and $g1 -ge 100 -and $b1 -ge 150)
                 
-                $px2 = [FastDetector]::GetPixel($hdc, $screenX + 40, $screenY)
-                $r2 = $px2 -band 0xFF; $g2 = ($px2 -shr 8) -band 0xFF; $b2 = ($px2 -shr 16) -band 0xFF
-                
-                if ((Test-IsGreenAcceptButton -R $r1 -G $g1 -B $b1) -and (Test-IsGreenAcceptButton -R $r2 -G $g2 -B $b2)) {
+                if ($isButton1) {
                     $result.hasAcceptButton = $true
-                    $result.isBottomButton = $true
-                    $result.acceptButtonX = $screenX + 30
+                    $result.acceptButtonX = $screenX + 15
                     $result.acceptButtonY = $screenY
+                    # Bottom 35% = Accept all (click), otherwise dialog (Alt+Enter)
+                    $result.isBottomButton = ($y -gt ($height * 0.65))
                     break
                 }
             }
         }
     }
     
-    # ========== SECOND: Check for dialog Accept/Run button (wider area) ==========
+    # ========== PASS 2: Check for stop/pause (red square, bottom-right of chat) ==========
+    # Only check if no Accept button was found
     if (-not $result.hasAcceptButton) {
-        $dialogStartY = [int]($height * 0.15)
-        $dialogEndY = [int]($height * 0.90)
+        $pauseStartX = [int]($width * 0.80)
+        $pauseEndX = [int]($width * 0.97)
+        $pauseStartY = [int]($height * 0.82)
+        $pauseEndY = [int]($height * 0.97)
         
-        for ($y = $dialogStartY; $y -lt $dialogEndY -and -not $result.hasAcceptButton; $y += $stepY) {
-            for ($x = $startX; $x -lt $endX; $x += $stepX) {
+        for ($y = $pauseStartY; $y -lt $pauseEndY -and -not $result.isPaused; $y += 12) {
+            for ($x = $pauseStartX; $x -lt $pauseEndX; $x += 12) {
                 $screenX = $rect.Left + $x
                 $screenY = $rect.Top + $y
                 
@@ -210,212 +179,97 @@ try {
                 $g = ($pixel -shr 8) -band 0xFF
                 $b = ($pixel -shr 16) -band 0xFF
                 
-                if (Test-IsGreenAcceptButton -R $r -G $g -B $b) {
-                    $px1 = [FastDetector]::GetPixel($hdc, $screenX + 20, $screenY)
-                    $r1 = $px1 -band 0xFF; $g1 = ($px1 -shr 8) -band 0xFF; $b1 = ($px1 -shr 16) -band 0xFF
-                    
-                    $px2 = [FastDetector]::GetPixel($hdc, $screenX + 40, $screenY)
-                    $r2 = $px2 -band 0xFF; $g2 = ($px2 -shr 8) -band 0xFF; $b2 = ($px2 -shr 16) -band 0xFF
-                    
-                    if ((Test-IsGreenAcceptButton -R $r1 -G $g1 -B $b1) -and (Test-IsGreenAcceptButton -R $r2 -G $g2 -B $b2)) {
-                        $result.hasAcceptButton = $true
-                        $result.acceptButtonX = $screenX + 30
-                        $result.acceptButtonY = $screenY
+                if ($r -ge 180 -and $g -lt 100 -and $b -lt 100) {
+                    # Quick neighbor verify
+                    $px1 = [FastDetector]::GetPixel($hdc, $screenX + 5, $screenY)
+                    $r1 = $px1 -band 0xFF
+                    if ($r1 -ge 180) {
+                        $result.isPaused = $true
+                        $result.chatButtonColor = "red"
                         break
                     }
                 }
+            }
+        }
+    }
+    
+    # ========== PASS 3: Determine chat state (only if no Accept and no pause) ==========
+    if (-not $result.hasAcceptButton -and -not $result.isPaused) {
+        # Corner scan for send button color
+        $foundRed = $false
+        
+        foreach ($xOffset in @(30, 50, 80, 120, 160, 200, 250)) {
+            foreach ($yOffset in @(30, 50, 70, 100, 130, 160)) {
+                if ($foundRed) { break }
                 
-                # NOTE: Retry button detection removed from here - single pixel check
-                # caused false positives from red content (emoji, badges) in VS Code.
-                # Retry is properly detected with cluster verification in STEP 2.
+                $screenX = $rect.Right - $xOffset
+                $screenY = $rect.Bottom - $yOffset
+                
+                $pixel = [FastDetector]::GetPixel($hdc, $screenX, $screenY)
+                $r = $pixel -band 0xFF
+                $g = ($pixel -shr 8) -band 0xFF
+                $b = ($pixel -shr 16) -band 0xFF
+                
+                if ($r -ge 150 -and $g -lt 100 -and $b -lt 100) {
+                    $foundRed = $true
+                }
+            }
+        }
+        
+        if ($foundRed) {
+            $result.chatButtonColor = "red"
+            $result.isPaused = $true
+        }
+        else {
+            # No red found = chat is ready for input
+            $result.chatButtonColor = "gray"
+            
+            # Check for Retry button with cluster verification (bottom half, right side)
+            $retryStartY = [int]($height * 0.55)
+            $retryEndY = [int]($height * 0.95)
+            $retryStartX = [int]($width * 0.55)
+            $retryEndX = [int]($width * 0.95)
+            
+            for ($y = $retryEndY; $y -gt $retryStartY -and -not $result.hasRetryButton; $y -= 20) {
+                for ($x = $retryStartX; $x -lt $retryEndX; $x += 25) {
+                    $px = $rect.Left + $x
+                    $py = $rect.Top + $y
+                    
+                    $pxl = [FastDetector]::GetPixel($hdc, $px, $py)
+                    $pr = $pxl -band 0xFF
+                    $pg = ($pxl -shr 8) -band 0xFF
+                    $pb = ($pxl -shr 16) -band 0xFF
+                    
+                    # Blue Retry button (R<100, G:100-200, B>=180)
+                    if ($pr -lt 100 -and $pg -ge 100 -and $pg -le 200 -and $pb -ge 180) {
+                        # Cluster check - need 3+ adjacent blue pixels
+                        $blueCount = 1
+                        for ($checkX = 10; $checkX -le 40; $checkX += 10) {
+                            $cpx = [FastDetector]::GetPixel($hdc, $px + $checkX, $py)
+                            $cr = $cpx -band 0xFF; $cg = ($cpx -shr 8) -band 0xFF; $cb = ($cpx -shr 16) -band 0xFF
+                            if ($cr -lt 100 -and $cg -ge 100 -and $cb -ge 180) { $blueCount++ }
+                        }
+                        
+                        if ($blueCount -ge 3) {
+                            $result.hasRetryButton = $true
+                            $result.retryButtonX = $px + 20
+                            $result.retryButtonY = $py
+                            break
+                        }
+                    }
+                }
+            }
+            
+            # If no Retry, chat is ready
+            if (-not $result.hasRetryButton) {
+                $result.hasEnterButton = $true
+                $result.enterButtonX = $rect.Right - 60
+                $result.enterButtonY = $rect.Bottom - 50
             }
         }
     }
     
     [FastDetector]::ReleaseDC([IntPtr]::Zero, $hdc) | Out-Null
-    
-    # ========== THIRD: Check for PAUSE button (red square in bottom-right) ==========
-    # DEBUG: Log window rect for diagnosis
-    Write-Host "[DEBUG] Window rect: Left=$($rect.Left) Top=$($rect.Top) Right=$($rect.Right) Bottom=$($rect.Bottom) W=$width H=$height" -NoNewline | Out-Null
-    [Console]::Error.WriteLine("[DEBUG] Window rect: Left=$($rect.Left) Top=$($rect.Top) Right=$($rect.Right) Bottom=$($rect.Bottom) W=$width H=$height")
-    
-    $hdc2 = [FastDetector]::GetDC([IntPtr]::Zero)
-    
-    $pauseStartX = [int]($width * 0.80)
-    $pauseEndX = [int]($width * 0.97)
-    $pauseStartY = [int]($height * 0.80)
-    $pauseEndY = [int]($height * 0.97)
-    
-    # DEBUG: Log some sample colors from the pause area
-    $debugSamples = @()
-    
-    for ($y = $pauseStartY; $y -lt $pauseEndY -and -not $result.isPaused; $y += 10) {
-        for ($x = $pauseStartX; $x -lt $pauseEndX; $x += 10) {
-            $screenX = $rect.Left + $x
-            $screenY = $rect.Top + $y
-            
-            $pixel = [FastDetector]::GetPixel($hdc2, $screenX, $screenY)
-            $r = $pixel -band 0xFF
-            $g = ($pixel -shr 8) -band 0xFF
-            $b = ($pixel -shr 16) -band 0xFF
-            
-            # Collect debug samples (first 5)
-            if ($debugSamples.Count -lt 5) {
-                $debugSamples += "($screenX,$screenY)=R$r,G$g,B$b"
-            }
-            
-            if ($r -ge 180 -and $g -lt 100 -and $b -lt 100) {
-                $px1 = [FastDetector]::GetPixel($hdc2, $screenX + 5, $screenY)
-                $r1 = $px1 -band 0xFF; $g1 = ($px1 -shr 8) -band 0xFF; $b1 = ($px1 -shr 16) -band 0xFF
-                
-                $px2 = [FastDetector]::GetPixel($hdc2, $screenX, $screenY + 5)
-                $r2 = $px2 -band 0xFF; $g2 = ($px2 -shr 8) -band 0xFF; $b2 = ($px2 -shr 16) -band 0xFF
-                
-                if (($r1 -ge 180 -and $g1 -lt 100 -and $b1 -lt 100) -and ($r2 -ge 180 -and $g2 -lt 100 -and $b2 -lt 100)) {
-                    $result.isPaused = $true
-                    break
-                }
-            }
-        }
-    }
-    
-    [Console]::Error.WriteLine("[DEBUG] Pause scan area: x=$pauseStartX-$pauseEndX y=$pauseStartY-$pauseEndY | isPaused=$($result.isPaused) | Samples: $($debugSamples -join '; ')")
-    
-    [FastDetector]::ReleaseDC([IntPtr]::Zero, $hdc2) | Out-Null
-    
-    # ========== STEP 2: Check chat button color ==========
-    # SAFETY FIRST: If isPaused was already detected, force "red" and skip corner scan
-    if (-not $result.hasAcceptButton) {
-        if ($result.isPaused) {
-            # Agent is working (red square found) - force red, don't risk false "gray"
-            $result.chatButtonColor = "red"
-        }
-        else {
-            # Normal corner scan for chat button color
-            $hdc3 = [FastDetector]::GetDC([IntPtr]::Zero)
-            $cornerDebugCount = 0
-            $foundGray = $false
-            $foundRed = $false
-            $foundBlue = $false
-            
-            foreach ($xOffset in @(30, 40, 50, 60, 70, 80, 100, 120, 140, 160, 180, 200, 220, 250, 300)) {
-                foreach ($yOffset in @(20, 30, 40, 50, 60, 70, 80, 100, 120, 140, 160, 180, 200)) {
-                    if ($foundGray -or $foundRed -or $foundBlue) { break }
-                    
-                    $screenX = $rect.Right - $xOffset
-                    $screenY = $rect.Bottom - $yOffset
-                    
-                    $pixel = [FastDetector]::GetPixel($hdc3, $screenX, $screenY)
-                    $r = $pixel -band 0xFF
-                    $g = ($pixel -shr 8) -band 0xFF
-                    $b = ($pixel -shr 16) -band 0xFF
-                    
-                    $isGray = ($r -ge 100 -and $r -le 180 -and $g -ge 100 -and $g -le 180 -and $b -ge 100 -and $b -le 180)
-                    $isSimilar = ([Math]::Abs($r - $g) -lt 20 -and [Math]::Abs($g - $b) -lt 20)
-                    $isRed = ($r -ge 150 -and $g -lt 100 -and $b -lt 100)
-                    $isBlue = ($r -lt 100 -and $g -ge 100 -and $b -ge 150)
-                    
-                    if ($isGray -and $isSimilar) { $foundGray = $true }
-                    if ($isRed) { $foundRed = $true }
-                    if ($isBlue) { $foundBlue = $true }
-                    
-                    # DEBUG: Log first few corner samples
-                    if ($cornerDebugCount -lt 5) {
-                        [Console]::Error.WriteLine("[DEBUG] Corner ($screenX,$screenY): R=$r G=$g B=$b gray=$($isGray -and $isSimilar) red=$isRed blue=$isBlue")
-                        $cornerDebugCount++
-                    }
-                }
-            }
-            
-            if ($foundRed) {
-                $result.chatButtonColor = "red"
-                $result.isPaused = $true
-                
-                # Search for Accept dialog while agent is working
-                $dialogStartY = [int]($height * 0.15)
-                $dialogEndY = [int]($height * 0.90)
-                $dialogStartX = [int]($width * 0.50)
-                $dialogEndX = [int]($width * 0.98)
-                
-                for ($y = $dialogStartY; $y -lt $dialogEndY -and -not $result.hasAcceptButton; $y += 20) {
-                    for ($x = $dialogStartX; $x -lt $dialogEndX; $x += 25) {
-                        $px = $rect.Left + $x
-                        $py = $rect.Top + $y
-                        
-                        $pxl = [FastDetector]::GetPixel($hdc3, $px, $py)
-                        $pr = $pxl -band 0xFF
-                        $pg = ($pxl -shr 8) -band 0xFF
-                        $pb = ($pxl -shr 16) -band 0xFF
-                        
-                        if (Test-IsGreenAcceptButton -R $pr -G $pg -B $pb) {
-                            $px1 = [FastDetector]::GetPixel($hdc3, $px + 20, $py)
-                            $r1 = $px1 -band 0xFF; $g1 = ($px1 -shr 8) -band 0xFF; $b1 = ($px1 -shr 16) -band 0xFF
-                            
-                            if (Test-IsGreenAcceptButton -R $r1 -G $g1 -B $b1) {
-                                $result.hasAcceptButton = $true
-                                $result.isBottomButton = $false
-                                $result.acceptButtonX = $px + 30
-                                $result.acceptButtonY = $py
-                                break
-                            }
-                        }
-                    }
-                }
-            }
-            else {
-                $result.chatButtonColor = "gray"
-                
-                # Search for Retry button
-                $retryStartY = [int]($height * 0.50)
-                $retryEndY = [int]($height * 0.95)
-                $retryStartX = [int]($width * 0.50)
-                $retryEndX = [int]($width * 0.98)
-                
-                for ($y = $retryEndY; $y -gt $retryStartY -and -not $result.hasRetryButton; $y -= 15) {
-                    for ($x = $retryStartX; $x -lt $retryEndX; $x += 20) {
-                        $px = $rect.Left + $x
-                        $py = $rect.Top + $y
-                        
-                        $pxl = [FastDetector]::GetPixel($hdc3, $px, $py)
-                        $pr = $pxl -band 0xFF
-                        $pg = ($pxl -shr 8) -band 0xFF
-                        $pb = ($pxl -shr 16) -band 0xFF
-                        
-                        $isBlueRetry = ($pr -lt 100 -and $pg -ge 100 -and $pg -le 200 -and $pb -ge 180)
-                        
-                        if ($isBlueRetry) {
-                            $blueCount = 1
-                            for ($checkX = 1; $checkX -le 40; $checkX += 10) {
-                                $checkPxl = [FastDetector]::GetPixel($hdc3, $px + $checkX, $py)
-                                $checkR = $checkPxl -band 0xFF
-                                $checkG = ($checkPxl -shr 8) -band 0xFF
-                                $checkB = ($checkPxl -shr 16) -band 0xFF
-                                if ($checkR -lt 100 -and $checkG -ge 100 -and $checkG -le 200 -and $checkB -ge 180) {
-                                    $blueCount++
-                                }
-                            }
-                            
-                            if ($blueCount -ge 3) {
-                                $result.hasRetryButton = $true
-                                $result.retryButtonX = $px + 20
-                                $result.retryButtonY = $py
-                                break
-                            }
-                        }
-                    }
-                }
-                
-                # If no Retry found, chat is ready for input
-                if (-not $result.hasRetryButton) {
-                    $result.hasEnterButton = $true
-                    $result.enterButtonX = $rect.Right - 30
-                    $result.enterButtonY = $rect.Bottom - 40
-                }
-            }
-            
-            [FastDetector]::ReleaseDC([IntPtr]::Zero, $hdc3) | Out-Null
-        }
-    }
     
     $result | ConvertTo-Json -Compress
 }
